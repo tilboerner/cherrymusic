@@ -523,7 +523,6 @@ class Property(object):
 
 
     Attributes
-    ----------
 
     **name** (final)
 
@@ -587,7 +586,6 @@ class Property(object):
 
 
     Conversion views on value
-    -------------------------
 
     There are couple of additional attributes that will yield the value
     converted to the appropriate type. These are:
@@ -608,7 +606,6 @@ class Property(object):
 
 
     Standard functions
-    ------------------
 
     **bool()**
 
@@ -1046,7 +1043,7 @@ class Configuration(Property):
     After construction, the name of a Configuration always includes that of its parent.
 
 
-    Accessing children
+    Accessing children::
 
         cfg[childname]
         cfg[child.subchild.etc]
@@ -1060,7 +1057,7 @@ class Configuration(Property):
     which might not stay around after a pure read. (Behavior might change.)
 
 
-    Assigning to children
+    Assigning to children::
 
         cfg.a = something
         cfg['a'] = something
@@ -1096,8 +1093,7 @@ class Configuration(Property):
          cfgA + cfgB != cfgB + cfgA
 
 
-    iteration
-    ---------
+    **iteration**
 
     Iterating over a configuration will yield the names of all its sub-
     configurations, recursively, with the leading name of the parent removed. It
@@ -1105,14 +1101,14 @@ class Configuration(Property):
     except for special ones that refer to the configuration itself or its
     Property attributes.
 
-    length
-    ------
+
+    **length**
 
     The length of a configuration equals the number of its subconfigurations,
     *recursively*. It is the number of items an iteration will yield.
 
-    operator in
-    -----------
+
+    **operator in**
 
     ``a in cfgA`` is True if ``a`` is the *full* name of one of ``cfgA``'s sub-
     properties. Therefore, it coincides only with the names in an iteration of
@@ -1121,15 +1117,15 @@ class Configuration(Property):
     **WARNING:** This behavior is inconsistent with general expectations and
     might change in the future.
 
-    implicit conversion to bool
-    ---------------------------
+
+    **implicit conversion to bool**
 
     In a boolean context, a Conversion is considered True only if its *Property*
     nature is True or if it has sub-properties.
     '''
 
     def __init__(self, name=None,
-                 value=None, type=None, validity=None, readonly=None, hidden=None, desc=None, #@ReservedAssignment
+                 value=None, type=None, validity=None, readonly=None, hidden=None, desc=None,  # @ReservedAssignment
                  parent=None):
         self.__key = Key(name)
         self._parent = parent

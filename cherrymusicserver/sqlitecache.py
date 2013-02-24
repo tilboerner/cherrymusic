@@ -42,7 +42,7 @@ import cherrymusicserver as cherry
 from cherrymusicserver import log
 from cherrymusicserver import util
 from cherrymusicserver.cherrymodel import MusicEntry
-from cherrymusicserver.database import TableDescriptor, TableColumn
+from cherrymusicserver.database.defs import Property, Id
 from cherrymusicserver.util import Performance
 from cherrymusicserver.progress import ProgressTree, ProgressReporter
 
@@ -58,33 +58,129 @@ SEARCHTERM_SPLIT_REGEX = re.compile('(\w+|[^\s\w]+)')
 #if debug:
 #    log.level(log.DEBUG)
 
+DBNAME = 'cherry.cache'
+cherry.db.require({
+DBNAME: {
+    'versions': {
+        0: {
+            'types': {
+                'files': [
+                    Property('parent', int, notnull=True),
+                    Property('filename', str, notnull=True),
+                    Property('filetype', str),
+                    Property('isdir', int, notnull=True),
+                ],
+                'dictionary': [
+                    Property('word', str, notnull=True),
+                    Property('occurences', int, notnull=True, default=1),
+                ],
+                'search': [
+                    Property('drowid', int, notnull=True),
+                    Property('frowid', int, notnull=True),
+                ],
+            }
+        },
+        1: {
+            'transition': {
+                'prompt': True,
+                'reason': os.linesep.join(util.phrase_to_lines('''
+                    Update media database to new layout
+
+                    The old database layout might have introduced some
+                    inconsistencies. CherryMusic can either update the database
+                    to the new layout, keeping the old content as well as
+                    potential inconsistencies, or it can recreate everything
+                    from scratch.
+
+                    Enter 'y' to update. Or, enter 'n' to quit and run
+                    cherrymusic with the '--dropfiledb' option to rescan your
+                    music collection.''')),
+                'sql': '''
+                    CREATE TABLE IF NOT EXISTS files_copy(
+                            _id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                            _created INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                            _modified INTEGER DEFAULT 0,
+                            _deleted INTEGER DEFAULT 0,
+                            parent INTEGER NOT NULL,
+                            filename TEXT NOT NULL,
+                            filetype TEXT,
+                            isdir INTEGER NOT NULL
+                        );
+                    INSERT INTO files_copy(_id, _created, parent, filename, filetype, isdir)
+                        SELECT rowid, 0, parent, filename, filetype, isdir FROM files;
+                    DROP TABLE files;
+                    ALTER TABLE files_copy RENAME TO files;
+
+                    CREATE TABLE IF NOT EXISTS dict_copy(
+                        _id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                        word TEXT NOT NULL,
+                        occurrences INTEGER NOT NULL DEFAULT 1
+                    );
+                    INSERT INTO dict_copy(_id, word, occurrences)
+                        SELECT rowid, word, occurences FROM dictionary;
+                    DROP TABLE dictionary;
+                    ALTER TABLE dict_copy RENAME TO dictionary;
+
+                    CREATE TABLE IF NOT EXISTS search_copy(
+                        _id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                        drowid INTEGER NOT NULL,
+                        frowid INTEGER NOT NULL
+                    );
+                    INSERT INTO search_copy(_id, drowid, frowid)
+                        SELECT rowid, drowid, frowid FROM search;
+                    DROP TABLE search;
+                    ALTER TABLE search_copy RENAME TO search;
+                ''',
+            },
+            'types': {
+                'files': [
+                    Id('_id', auto=True),
+                    Property('_created', int, notnull=True, default="(strftime('%s', 'now'))"),
+                    Property('_modified', int, default=0),
+                    Property('_deleted', int, default=0),
+                    Property('parent', int, notnull=True),
+                    Property('filename', str, notnull=True),
+                    Property('filetype', str),
+                    Property('isdir', int, notnull=True),
+                ],
+                'dictionary': [
+                    Id('_id', auto=True),
+                    Property('word', str, notnull=True),
+                    Property('occurrences', int, notnull=True, default=1),
+                ],
+                'search': [
+                    Id('_id', auto=True),
+                    Property('drowid', int, notnull=True),
+                    Property('frowid', int, notnull=True),
+                ],
+            },
+            'indexes': [
+                {
+                    'on_type': 'files', 'keys': ['parent'],
+                },
+                {
+                    'on_type': 'dictionary', 'keys': ['word'],
+                },
+                {
+                    'on_type': 'search', 'keys': ['frowid', 'drowid'],  # for deletes from db
+                },
+                {
+                    'on_type': 'search', 'keys': ['drowid', 'frowid'],
+                },
+            ],
+        },
+    },
+},
+})
 
 
 class SQLiteCache(object):
-    def __init__(self, DBFILENAME):
+    def __init__(self, connector=None):
         self.validate_basedir()
-        self.DBFILENAME = DBFILENAME
-        setupDB = not os.path.isfile(DBFILENAME) or os.path.getsize(DBFILENAME) == 0
-        setupDB |= DBFILENAME == ':memory:' #always rescan when using ram db.
-
-        self.filestable = TableDescriptor('files', [
-            TableColumn('parent', 'int', 'NOT NULL'),
-            TableColumn('filename', 'text', 'NOT NULL'),
-            TableColumn('filetype', 'text'),
-            TableColumn('isdir', 'int', 'NOT NULL'),
-        ])
-        self.dictionarytable = TableDescriptor('dictionary', [
-            TableColumn('word', 'text', 'NOT NULL'),
-            TableColumn('occurences', 'int', 'NOT NULL DEFAULT 1'),
-            ])
-
-        self.searchtable = TableDescriptor('search', [
-            TableColumn('drowid', 'int', 'NOT NULL'),
-            TableColumn('frowid', 'int', 'NOT NULL')])
-
-        self.conn = sqlite3.connect(DBFILENAME, check_same_thread=False)
+        connector = (connector or cherry.db.connector).bound(DBNAME)
+        self.DBFILENAME = connector.dbname
+        self.conn = connector.connection
         self.db = self.conn.cursor()
-        self.rootDir = cherry.config.media.basedir.str
 
         #I don't care about journaling!
         self.conn.execute('PRAGMA synchronous = OFF')
@@ -101,7 +197,7 @@ class SQLiteCache(object):
                           ' ON files(parent)')
 
     def __table_exists(self, name):
-        return bool(self.conn.execute('SELECT name FROM sqlite_master'
+        return bool(self.conn.execute('SELECT 1 FROM sqlite_master'
                                       ' WHERE type="table" AND name=?', (name,)
                                       ).fetchall())
 
@@ -109,67 +205,17 @@ class SQLiteCache(object):
     def __table_is_empty(self, name):
         if not self.__table_exists(name):
             raise ValueError("table does not exist: %s" % name)
-        query = 'SELECT rowid FROM %s LIMIT 1' % (name,)
+        query = 'SELECT 1 FROM %s LIMIT 1' % (name,)
         res = self.conn.execute(query).fetchall()
         return not bool(res)
 
     def create_and_alter_tables(self, suppressWarning=False):
-        tableChanged = False
-        tableChanged |= self.filestable.createOrAlterTable(self.conn)
-        tableChanged |= self.dictionarytable.createOrAlterTable(self.conn)
-        tableChanged |= self.searchtable.createOrAlterTable(self.conn)
-
-        if tableChanged and not suppressWarning:
-            log.w('The database layout has changed, please run "cherrymusic --update" to make sure everthing is up to date.')
-        return tableChanged
-
-    def __create_index_if_non_exist(self):
-        self.filestable.createIndex(self.conn, ['parent'])
-        self.dictionarytable.createIndex(self.conn, ['word'])
-        self.searchtable.createIndex(self.conn, ['drowid', 'frowid'])
-
-    def __create_tables(self):
-        """DEPRECATED, has been replaced by create_and_alter_tables"""
-        self.__drop_tables()
-        self.conn.execute('CREATE TABLE files ('
-                          ' parent int NOT NULL,'
-                          ' filename text NOT NULL,'
-                          ' filetype text,'
-                          ' isdir int NOT NULL)')
-        self.conn.execute('CREATE TABLE dictionary (word text NOT NULL)')
-        self.conn.execute('CREATE TABLE search ('
-                          ' drowid int NOT NULL,'
-                          ' frowid int NOT NULL)')
-
+        cherry.db.ensure_requirements(DBNAME, autoconsent=suppressWarning)
 
     def drop_tables(self):
         self.conn.execute('DROP TABLE IF EXISTS files')
         self.conn.execute('DROP TABLE IF EXISTS dictionary')
         self.conn.execute('DROP TABLE IF EXISTS search')
-
-
-    def __create_indexes(self):
-        """DEPRECATED, has been replaced by __create_index_if_non_exist"""
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_files_parent'
-                          ' ON files(parent)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_dictionary'
-                          ' ON dictionary(word)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_search'
-                          ' ON search(drowid,frowid)')
-        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_search_rvs'
-                          ' ON search(frowid,drowid)')
-
-
-    def __drop_indexes(self):
-        self.conn.execute('DROP INDEX IF EXISTS idx_files_parent')
-        self.conn.execute('DROP INDEX IF EXISTS idx_dictionary')
-        self.conn.execute('DROP INDEX IF EXISTS idx_search')
-        self.conn.execute('DROP INDEX IF EXISTS idx_search_rvs')
-
-
-    def isEmpty(self):
-        """DEPRECATED create_and_alter_tables returns changes in DB"""
-        return self.__table_is_empty('files')
 
 
     @classmethod
@@ -230,14 +276,14 @@ class SQLiteCache(object):
                 fileids = [t[0] for t in self.fetchFileIds(terms, maxFileIdsPerTerm, mode)]
 
             if len(fileids) > NORMAL_FILE_SEARCH_LIMIT:
-                with Performance('sorting results by fileid occurences'):
+                with Performance('sorting results by fileid occurrences'):
                     resultfileids = {}
                     for fileid in fileids:
                         if fileid in resultfileids:
                             resultfileids[fileid] += 1
                         else:
                             resultfileids[fileid] = 1
-                    #sort items by occurences and only return maxresults
+                    #sort items by occurrences and only return maxresults
                     fileids = sorted(resultfileids.items(), key=itemgetter(1), reverse=True)
                     fileids = [t[0] for t in fileids]
                     fileids = fileids[:min(len(fileids), NORMAL_FILE_SEARCH_LIMIT)]
@@ -501,13 +547,13 @@ class SQLiteCache(object):
 
         log.i('running full update...')
         self.create_and_alter_tables()
+
         try:
             self.update_db_recursive(cherry.config.media.basedir.str, skipfirst=True)
         except:
             log.e('error during media update. database update incomplete.')
         finally:
-            self.__create_index_if_non_exist()
-            self.update_word_occurences()
+            self.update_word_occurrences()
             log.i('media database update complete.')
 
 
@@ -527,7 +573,7 @@ class SQLiteCache(object):
                 self.update_db_recursive(normpath, skipfirst=False)
             except Exception as exception:
                 log.e('update incomplete: %r', exception)
-        self.update_word_occurences()
+        self.update_word_occurrences()
         log.i('done updating paths.')
 
 
@@ -592,9 +638,9 @@ class SQLiteCache(object):
             log.i('items added %d, removed %d', add, deld)
             self.load_db_to_memory()
 
-    def update_word_occurences(self):
-        log.i('updating word occurences...')
-        self.conn.execute('''UPDATE dictionary SET occurences = (
+    def update_word_occurrences(self):
+        log.i('updating word occurrences...')
+        self.conn.execute('''UPDATE dictionary SET occurrences = (
                 select count(*) from search WHERE search.drowid = dictionary.rowid
             )''')
 
@@ -624,8 +670,10 @@ class SQLiteCache(object):
         All three can be None, signifying non-existence.
 
         It is possible to customize item creation by providing an `itemfactory`.
-        The argument must be a callable with the following parameter signature:
+        The argument must be a callable with the following parameter signature::
+
             itemfactory(infs, indb, parent [, optional arguments])
+        
         and must return an object satisfying the above requirements for an item.
         '''
         from collections import OrderedDict

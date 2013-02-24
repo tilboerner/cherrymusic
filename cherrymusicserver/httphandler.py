@@ -68,7 +68,7 @@ class HTTPHandler(object):
     def __init__(self, config, model):
         self.model = model
         self.config = config
-        self.useroptions = useroptiondb.UserOptionDB(databaseFilePath('useroptions.db'))
+        self.useroptions = useroptiondb.UserOptionDB()
         self.jsonrenderer = renderjson.JSON()
 
         template_main = 'res/main.html'
@@ -78,8 +78,8 @@ class HTTPHandler(object):
         self.mainpage = readRes(template_main)
         self.loginpage = readRes(template_login)
         self.firstrunpage = readRes(template_firstrun)
-        self.userdb = userdb.UserDB(databaseFilePath('user.db'))
-        self.playlistdb = playlistdb.PlaylistDB(databaseFilePath('playlist.db'))
+        self.userdb = userdb.UserDB()
+        self.playlistdb = playlistdb.PlaylistDB()
 
         self.handlers = {
             'search' : self.api_search,

@@ -32,13 +32,14 @@ import unittest
 
 import os
 import shutil
-import sqlite3
 import tempfile
 
 import cherrymusicserver as cherry
 from cherrymusicserver import configuration
 from cherrymusicserver import log
 from cherrymusicserver import sqlitecache
+
+from cherrymusicserver.test.test_database import MemConnector
 
 log.setTest()
 
@@ -151,8 +152,9 @@ class AddFilesToDatabaseTest(unittest.TestCase):
         self.testdir = getAbsPath(self.testdirname)
         setupTestfiles(self.testdir, ())
         self.setupConfig()
-        self.Cache = sqlitecache.SQLiteCache(':memory:')
-        self.Cache.create_and_alter_tables()
+        cherry.db.connector = MemConnector()
+        self.Cache = sqlitecache.SQLiteCache()
+        self.Cache.create_and_alter_tables(suppressWarning=True)
         self.Cache.full_update()
 
 
@@ -172,15 +174,16 @@ class AddFilesToDatabaseTest(unittest.TestCase):
 
         self.assertTrue(file.uid >= 0, "file must have valid rowid")
 
-        cols = ', '.join(self.Cache.filestable.columns.keys())
-        res = self.Cache.conn.execute('SELECT %s from files WHERE rowid=?'%cols, (file.uid,)).fetchall()
+        dbdef = cherry.db.dbdef(sqlitecache.DBNAME)
+        colnames = tuple(p.name for p in dbdef.types['files'])
+        res = self.Cache.conn.execute('SELECT %s from files WHERE rowid=?'%(', '.join(colnames),), (file.uid,)).fetchall()
 
         self.assertTrue(1 == len(res), "expect exactly one file with that uid")
-        self.assertTrue(len(self.Cache.filestable.columns) == len(res[0]), "expect exactly %s colums stored per file, got %s" % (len(self.Cache.filestable.columns),len(res[0])))
+        self.assertTrue(len(colnames) == len(res[0]), "expect exactly %s colums stored per file, got %s" % (len(colnames),len(res[0])))
 
         resdict = {}
         i=0
-        for k in self.Cache.filestable.columns.keys():
+        for k in colnames:
             resdict[k] = res[0][i]
             i+=1
         self.assertTrue(parent.uid == resdict['parent'], "correct parent id must be saved")
@@ -334,9 +337,10 @@ class RemoveFilesFromDatabaseTest(unittest.TestCase):
         self.testdir = getAbsPath(self.testdirname)
         setupTestfiles(self.testdir, self.testfiles)
         self.setupConfig()
-        self.Cache = sqlitecache.SQLiteCache(':memory:')
-        if self.Cache.create_and_alter_tables():
-            self.Cache.full_update()
+        cherry.db.connector = MemConnector()
+        self.Cache = sqlitecache.SQLiteCache()
+        self.Cache.create_and_alter_tables(suppressWarning=True)
+        self.Cache.full_update()
         self.setupFileObjects()
         assert self.fileobjects[''].fullpath == os.path.abspath(self.testdir), \
                 'precondition: test rootdir has correct fullpath'
@@ -452,28 +456,32 @@ class RemoveFilesFromDatabaseTest(unittest.TestCase):
         self.assertEqual(1, common,
                          'words still referenced elsewhere must not be removed')
 
-
     def testRollbackOnException(self):
 
-        class BoobyTrap(sqlite3.Connection):
+        class BoobytrappedConnector(MemConnector):
             exceptcount = 0
 
-            def execute(self, stmt, *parameters):
-                '''triggers an Exception when the 'undeletable' item should be 
+            def __init__(self):
+                super().__init__()
+                self.Connection = type(
+                    '%s.BoobytrappedConnection' % (self.__class__.__module__),
+                    (self.Connection,),
+                    {'execute': self.__execute})
+
+            def __execute(self, stmt, *parameters):
+                '''triggers an Exception when the 'undeletable' item should be
                 removed. relies on way too much knowledge of Cache internals. :(
                 '''
                 if stmt.lower().startswith('delete from files') \
                   and parameters[0][0] == undeletable.uid:
-                    self.__class__.exceptcount += 1
+                    self.exceptcount += 1
                     raise Exception("boom goes the dynamite")
-                return super(self.__class__, self).execute(stmt, *parameters)
+                return super(self.Connection, self._cxn).execute(stmt, *parameters)
 
-
-        # SETUP
-        self.Cache = sqlitecache.SQLiteCache(':memory:')
-        self.Cache.conn.close()
-        self.Cache.conn = BoobyTrap(':memory:')
-        self.Cache.create_and_alter_tables()
+        # SPECIAL SETUP
+        cherry.db.connector = BoobytrappedConnector()
+        self.Cache = sqlitecache.SQLiteCache()
+        self.Cache.create_and_alter_tables(suppressWarning=True)
         self.Cache.full_update()
 
         removelist = self.get_fileobjects_for('root_dir')
@@ -496,7 +504,7 @@ class RemoveFilesFromDatabaseTest(unittest.TestCase):
 
 
         # ASSERT
-        self.assertLessEqual(1, BoobyTrap.exceptcount,
+        self.assertLessEqual(1, cherry.db.connector.exceptcount,
                          'test must have raised at least one exception')
 
         self.assertListEqual(deletable, removed,
@@ -517,8 +525,9 @@ class SymlinkTest(unittest.TestCase):
         self.testdir = getAbsPath(self.testdirname)
         setupTestfiles(self.testdir, self.testfiles)
         cherry.config.media.basedir = self.testdir
-        self.Cache = sqlitecache.SQLiteCache(':memory:')
-        self.Cache.create_and_alter_tables()
+        cherry.db.connector = MemConnector()
+        self.Cache = sqlitecache.SQLiteCache()
+        self.Cache.create_and_alter_tables(suppressWarning=True)
 
     def tearDown(self):
         removeTestfiles(self.testdir, self.testfiles)
@@ -584,8 +593,9 @@ class UpdateTest(unittest.TestCase):
             config.search.autoupdate = 'True'
 
     def setupCache(self):
-        self.Cache = sqlitecache.SQLiteCache(':memory:')
-        self.Cache.create_and_alter_tables()
+        cherry.db.connector = MemConnector()
+        self.Cache = sqlitecache.SQLiteCache()
+        self.Cache.create_and_alter_tables(suppressWarning=True)
         self.Cache.full_update()
 
     def clearCache(self):

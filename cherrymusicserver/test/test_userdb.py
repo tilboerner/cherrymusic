@@ -32,13 +32,17 @@ import unittest
 from cherrymusicserver import log
 log.setTest()
 
+import cherrymusicserver as cherry
 from cherrymusicserver import userdb
+from cherrymusicserver.test.test_database import MemConnector
 
 class TestAuthenticate(unittest.TestCase):
     '''test authentication functions of userdb'''
 
     def setUp(self):
-        self.users = userdb.UserDB(':memory:')
+        cherry.db.connector = MemConnector()
+        cherry.db.ensure_requirements(userdb.DBNAME)
+        self.users = userdb.UserDB()
         self.users.addUser('user', 'password', False)
 
 

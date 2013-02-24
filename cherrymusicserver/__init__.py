@@ -41,15 +41,26 @@ def fake_wait_for_occupied_port(host, port):
 cherrypy.process.servers.wait_for_occupied_port = fake_wait_for_occupied_port
 
 from cherrymusicserver import configuration
-from cherrymusicserver import sqlitecache
+config = None
+
+from cherrymusicserver import pathprovider
+from cherrymusicserver import database
+db = database.DatabaseController(
+        database.sql.SQLiteConnector(
+            datadir=pathprovider.databaseFilePath(''),
+            suffix='db',
+            connargs={
+                'check_same_thread': False,
+            }
+        )
+    )
+
 from cherrymusicserver import cherrymodel
 from cherrymusicserver import httphandler
-from cherrymusicserver import util
-from cherrymusicserver import pathprovider
 from cherrymusicserver import log
+from cherrymusicserver import sqlitecache
+from cherrymusicserver import util
 import cherrymusicserver.setup
-
-config = None
 VERSION = "0.23.0"
 DESCRIPTION = "an mp3 server for your browser"
 LONG_DESCRIPTION = """CherryMusic is a music streaming
@@ -58,6 +69,7 @@ LONG_DESCRIPTION = """CherryMusic is a music streaming
     other users. It's able to play music on almost all devices since
     it happends in your browser and uses HTML5 for audio playback.
     """
+
 
 class CherryMusic:
 
@@ -77,31 +89,31 @@ class CherryMusic:
                 configuration.write_to_file(configuration.from_defaults(), pathprovider.configurationFile())
                 self.printWelcomeAndExit()
         self._init_config()
-        self.db = sqlitecache.SQLiteCache(pathprovider.databaseFilePath('cherry.cache.db'))
+        self.db = sqlitecache.SQLiteCache()
 
-        if not update == None or dropfiledb:
-            CherryMusic.UpdateThread(self.db,update,dropfiledb).start()
+        if dropfiledb:
+            db.resetdb(sqlitecache.DBNAME)
+            update = ()
+
+        db_is_ready = db.ensure_requirements(autoconsent=False)
+        if not db_is_ready:
+            log.i("database schema update aborted. quitting.")
+            exit(1)
+
+        if update != None:
+            self._update_if_necessary(update)
+            # threading.Thread('UpdateThread', target=self._update_if_necessary, args=(update,)).start()
         else:
             self.cherrymodel = cherrymodel.CherryModel(self.db)
             self.httphandler = httphandler.HTTPHandler(config, self.cherrymodel)
             self.server()
 
-    class UpdateThread(threading.Thread):
-        def __init__(self, db, update,dropfiledb):
-            threading.Thread.__init__(self)
-            self.db = db
-            self.dropfiledb = dropfiledb
-            self.update = update #command line switch
-        def run(self):
-            if self.dropfiledb:
-                self.db.drop_tables()
-            dbLayoutChangesOrCreation = self.db.create_and_alter_tables()
-            if dbLayoutChangesOrCreation:
-                self.db.full_update()
-            elif self.update:
-                self.db.partial_update(*self.update)
-            elif self.update is not None:
-                self.db.full_update()
+    def _update_if_necessary(self, update):
+        cache = sqlitecache.SQLiteCache()
+        if update:
+            cache.partial_update(*self.update)
+        elif update is not None:
+            cache.full_update()
 
     def _init_config(self):
         global config

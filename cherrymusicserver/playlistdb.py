@@ -28,26 +28,91 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>
 #
 
-import os
-import sqlite3
+import cherrymusicserver as cherry
 from cherrymusicserver import log
 from cherrymusicserver.cherrymodel import MusicEntry
 try:
     from urllib.parse import unquote
 except ImportError:
     from backport.urllib.parse import unquote
+from cherrymusicserver.database.defs import Id, Property
+
+DBNAME = 'playlist'
+cherry.db.require({
+    DBNAME: {
+        'versions': {
+            0: {
+                'types': {
+                    'playlists': [
+                        Property('title', str),
+                        Property('userid', int),
+                        Property('public', int),
+                    ],
+                    'tracks': [
+                        Property('playlistid', int),
+                        Property('track', int),
+                        Property('url', str),
+                        Property('title', str),
+                    ],
+                },
+            },
+            1: {
+                'transition': {
+                    'sql': '''
+                        CREATE TABLE playlists_copy (
+                            _id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                            title TEXT,
+                            userid INTEGER,
+                            public INTEGER
+                        );
+                        INSERT INTO playlists_copy
+                            SELECT rowid, title, userid, public FROM playlists;
+                        DROP TABLE playlists;
+                        ALTER TABLE playlists_copy RENAME TO playlists;
+
+                        CREATE TABLE tracks_copy (
+                            _id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                            playlistid INTEGER,
+                            track INTEGER,
+                            url TEXT,
+                            title TEXT
+                        );
+                        INSERT INTO tracks_copy(playlistid, track, url, title)
+                            SELECT playlistid, track, url, title FROM tracks;
+                        DROP TABLE tracks;
+                        ALTER TABLE tracks_copy RENAME TO tracks;
+                    ''',
+                },
+                'types': {
+                    'playlists': [
+                        Id('_id', auto=True),
+                        Property('title', str),
+                        Property('userid', int),
+                        Property('public', int),
+                    ],
+                    'tracks': [
+                        Id('_id', auto=True),
+                        Property('playlistid', int),
+                        Property('track', int),
+                        Property('url', str),
+                        Property('title', str),
+                    ],
+                },
+                'indexes': [
+                    {'on_type': 'tracks', 'keys': ['playlistid'], },
+                ]
+            },
+        },
+    },
+}
+)
 
 class PlaylistDB:
-    def __init__(self, PLAYLISTDBFILE):
-        setupDB = not os.path.isfile(PLAYLISTDBFILE) or os.path.getsize(PLAYLISTDBFILE) == 0
-        self.conn = sqlite3.connect(PLAYLISTDBFILE, check_same_thread=False)
-        if setupDB:
-            log.d('Creating playlist db...')
-            self.conn.execute('CREATE TABLE playlists (title text, userid int, public int)')
-            self.conn.execute('CREATE TABLE tracks (playlistid int, track int, url text, title text)')
-            self.conn.commit()
-            log.d('done.')
-            log.d('Connected to Database. (' + PLAYLISTDBFILE + ')')
+    def __init__(self, connector=None):
+        if connector is None:
+            connector = cherry.db.connector
+        self.conn = connector.bound(DBNAME)
+
     def deletePlaylist(self, plid, userid):
         cursor = self.conn.cursor()
         cursor.execute("""DELETE FROM playlists WHERE rowid = ? and userid = ?""",(plid,userid))

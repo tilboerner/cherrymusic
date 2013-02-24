@@ -29,24 +29,66 @@
 #
 
 import hashlib
-import sqlite3
-import os
 import uuid
 
 from collections import namedtuple
+
+import cherrymusicserver as cherry
 from cherrymusicserver import log
+from cherrymusicserver.database.defs import Id, Property
+
+DBNAME = 'user'
+cherry.db.require({
+    DBNAME: {
+        'versions': {
+            0: {
+                'types': {
+                    'users': [
+                        Property('username', str, unique=True),
+                        Property('admin', int),
+                        Property('password', str),
+                        Property('salt', str),
+                    ],
+                },
+                },
+            1: {
+                'transition': {
+                    'sql': '''
+                        CREATE TABLE users_copy(
+                            _id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                            username TEXT,
+                            admin INTEGER,
+                            password TEXT,
+                            salt TEXT
+                        );
+                        INSERT INTO users_copy
+                            SELECT rowid, username, admin, password, salt FROM users;
+                        DROP TABLE users;
+                        ALTER TABLE users_copy RENAME TO users;
+                    '''
+                },
+                'types': {
+                    'users': [
+                        Id('_id', auto=True),
+                        Property('username', str),
+                        Property('admin', int),
+                        Property('password', str),
+                        Property('salt', str),
+                    ],
+                },
+                'indexes': [
+                    {'on_type': 'users', 'keys': ['username'], 'unique': True},
+                ],
+            },
+        },
+    },
+})
 
 class UserDB:
-    def __init__(self, USERDBFILE):
-        setupDB = not os.path.isfile(USERDBFILE) or os.path.getsize(USERDBFILE) == 0
-        self.conn = sqlite3.connect(USERDBFILE, check_same_thread=False)
-
-        if setupDB:
-            log.i('Creating user db table...')
-            self.conn.execute('CREATE TABLE users (username text UNIQUE, admin int, password text, salt text)')
-            self.conn.execute('CREATE INDEX idx_users ON users(username)');
-            log.i('done.')
-            log.i('Connected to Database. (' + USERDBFILE + ')')
+    def __init__(self, connector=None):
+        if connector is None:
+            connector = cherry.db.connector
+        self.conn = connector.bound(DBNAME).connection
 
     def addUser(self, username, password, admin):
         if not (username.strip() or password.strip()):

@@ -28,16 +28,37 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>
 #
 
-import sqlite3
-import os
 import json
 
+import cherrymusicserver as cherry
 from cherrymusicserver import log
 from cherrymusicserver import configuration as cfg
+from cherrymusicserver.database.defs import Property
+
+DBNAME = 'useroptions'
+cherry.db.require({
+    DBNAME: {
+        'versions': {
+            0: {
+                'types': {
+                    'option': [
+                        Property('userid', int),
+                        Property('name', str),
+                        Property('value', str),
+                    ],
+                },
+                'indexes': [
+                    {'on_type': 'option', 'keys':['userid', 'name'], 'name': 'idx_userid_name'}
+                ],
+            },
+        },
+    },
+})
+
 
 class UserOptionDB:
-    
-    def __init__(self, USEROPTIONDBFILE):
+
+    def __init__(self, connector=None):
         """user configuration:
             hidden values can not be set by the user in the options,
             but might be subject of bing set automatically, e.g. the
@@ -76,16 +97,10 @@ class UserOptionDB:
             )
             
             self.DEFAULTS = c
-        
-        setupDB = not os.path.isfile(USEROPTIONDBFILE) or os.path.getsize(USEROPTIONDBFILE) == 0
-        self.conn = sqlite3.connect(USEROPTIONDBFILE, check_same_thread=False)
 
-        if setupDB:
-            log.i('Creating user options db table...')
-            self.conn.execute('CREATE TABLE option (userid int, name text, value text)')
-            self.conn.execute('CREATE INDEX IF NOT EXISTS idx_userid_name ON option(userid, name)')
-            log.i('done.')
-            log.i('Connected to Database. (' + USEROPTIONDBFILE + ')')
+        if connector is None:
+            connector = cherry.db.connector
+        self.conn = connector.bound(DBNAME).connection
 
     def getOptionFromMany(self, key, userids):
         result = {}
